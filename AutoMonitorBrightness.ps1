@@ -45,7 +45,7 @@ if ($Time -ge $Sunrise -and $Time -le $Sunset) {
     $Noon = [timespan]::FromTicks(($Sunrise.Ticks + $Sunset.Ticks) / 2)
     $HalfDayTicks = ($Sunset.Ticks - $Sunrise.Ticks) / 2
     $NoonProximity = 1 - [Math]::Min([Math]::Abs(($Time - $Noon).Ticks) / $HalfDayTicks, 1.0)
-    $Factor = [Math]::Min([Math]::Max($UvIndex / 10.0, $NoonProximity / 2.0), 1.0)
+    $Factor = [Math]::Min([Math]::Max($UvIndex / 10.0, $NoonProximity * 0.7), 1.0)
     $Brightness = [int]($MinBrightness + ($MaxBrightness - $MinBrightness) * $Factor)
 }
 else {
