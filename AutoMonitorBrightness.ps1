@@ -42,12 +42,11 @@ $UvIndex = [int]$WeatherSplit[3]
 
 # Calculate brightness
 if ($Time -ge $Sunrise -and $Time -le $Sunset) {
-    if ($UvIndex -ge 10) {
-        $Brightness = $MaxBrightness
-    }
-    else {
-        $Brightness = [int]($MinBrightness + ($MaxBrightness - $MinBrightness) * $UvIndex / 10)
-    }
+    $Noon = [timespan]::FromTicks(($Sunrise.Ticks + $Sunset.Ticks) / 2)
+    $HalfDayTicks = ($Sunset.Ticks - $Sunrise.Ticks) / 2
+    $NoonProximity = 1 - [Math]::Min([Math]::Abs(($Time - $Noon).Ticks) / $HalfDayTicks, 1.0)
+    $Factor = [Math]::Min([Math]::Max($UvIndex / 10.0, $NoonProximity / 2.0), 1.0)
+    $Brightness = [int]($MinBrightness + ($MaxBrightness - $MinBrightness) * $Factor)
 }
 else {
     $Brightness = $MinBrightness
