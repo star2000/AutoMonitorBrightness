@@ -4,7 +4,8 @@ if ($Host.Version.Major -ge 3) {
     Register-ScheduledTask AutoMonitorBrightness star2000 (
         New-ScheduledTaskAction wscript AutoMonitorBrightness.vbs %ALLUSERSPROFILE%
     ) (
-        New-ScheduledTaskTrigger -Once -At 6am -RepetitionInterval (New-TimeSpan -Hours 1)
+        (New-ScheduledTaskTrigger -AtStartup),
+        (New-ScheduledTaskTrigger -Once -At 6am -RepetitionInterval (New-TimeSpan -Hours 1))
     ) (
         New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -RunOnlyIfNetworkAvailable -StartWhenAvailable
     ) -Force | Out-Null
