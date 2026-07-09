@@ -51,7 +51,7 @@ schtasks /Run /TN "\star2000\AutoMonitorBrightness"
   - 可选值：`纬度,经度` 或者 `地名` 镇级及以上 中英文都行
 - 最大亮度
   - 环境变量名：`AMB_MAX_BRIGHTNESS`
-  - 默认值：`50`
+  - 默认值：`100`
   - 可选值：`0`到`100`
 - 最小亮度
   - 环境变量名：`AMB_MIN_BRIGHTNESS`

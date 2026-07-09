@@ -1,6 +1,6 @@
 Param (
     $Location = $env:AMB_LOCATION,
-    $MaxBrightness = [int]$($env:AMB_MAX_BRIGHTNESS, 50 | Select-Object -First 1),
+    $MaxBrightness = [int]$($env:AMB_MAX_BRIGHTNESS, 100 | Select-Object -First 1),
     $MinBrightness = [int]$($env:AMB_MIN_BRIGHTNESS, 0 | Select-Object -First 1)
 )
 $ErrorActionPreference = 'Stop'
