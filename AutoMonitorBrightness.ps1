@@ -46,7 +46,7 @@ if ($Time -ge $Sunrise -and $Time -le $Sunset) {
     $HalfDayTicks = ($Sunset.Ticks - $Sunrise.Ticks) / 2
     $SunElevation = [Math]::Max(1 - [Math]::Abs($Time.Ticks - $MiddayTicks) / $HalfDayTicks, 0)
     $UvFactor = $UvIndex / 7.5
-    $TimeFactor = ([Math]::Pow($SunElevation - 1, 3) + 1) * 0.7
+    $TimeFactor = ([Math]::Pow($SunElevation - 1, 3) + 1) * 0.5
     $Factor = [Math]::Min([Math]::Max($UvFactor, $TimeFactor), 1)
     $Brightness = [int]($MinBrightness + ($MaxBrightness - $MinBrightness) * $Factor)
 }
