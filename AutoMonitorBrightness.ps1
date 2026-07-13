@@ -62,13 +62,6 @@ Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods | For
     }
 }
 
-# Update link
-if (Test-Path "$env:ALLUSERSPROFILE\AutoMonitorBrightness.vbs") {
-    @'
-CreateObject("WScript.Shell").Run "powershell -NoProfile -NonInteractive ""[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; (New-Object Net.WebClient).DownloadString('https://cdn.jsdelivr.net/gh/star2000/AutoMonitorBrightness@main/AutoMonitorBrightness.ps1') | iex""",0
-'@ > "$env:ALLUSERSPROFILE\AutoMonitorBrightness.vbs"
-}
-
 # Count
 $ErrorActionPreference = 'SilentlyContinue'
 $WebClient.DownloadString('https://cdn.jsdelivr.net/gh/star2000/count@5/count')
