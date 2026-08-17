@@ -33,7 +33,7 @@ $WebClient = New-Object Net.WebClient
 $WebClient.Encoding = [Text.Encoding]::UTF8
 $WebClient.Proxy = $null
 # 20:14:28+0800|05:07:50|19:15:47|0
-$WeatherString = $WebClient.DownloadString("https://wttr.is/${Location}?lang=zh&format=%T|%S|%s|%u")
+$WeatherString = $WebClient.DownloadString("https://wttr.in/${Location}?lang=zh&format=%T|%S|%s|%u")
 $WeatherSplit = $WeatherString.Split('|')
 $Time = [timespan]$WeatherSplit[0].Split('+')[0]
 $Sunrise = [timespan]$WeatherSplit[1]
