@@ -15,7 +15,7 @@ Set-Content -Path $Launcher -Value $LauncherContent -Encoding ASCII
 
 if ($Host.Version.Major -ge 3) {
     Register-ScheduledTask AutoMonitorBrightness star2000 (
-        New-ScheduledTaskAction powershell.exe "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$Launcher`""
+        New-ScheduledTaskAction powershell.exe "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$Launcher`""
     ) (
         (New-ScheduledTaskTrigger -AtStartup),
         (New-ScheduledTaskTrigger -AtLogOn)
