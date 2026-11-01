@@ -9,9 +9,9 @@ Windows 自动调整屏幕亮度
 
 通过位置信息 查询到 天气里的紫外线指数、再根据日升日落时间 调整屏幕亮度
 
-开机触发一次，每小时整点触发一次
+开机或登录后启动一个后台常驻进程，启动时及每小时整点更新天气数据，每分钟检查一次亮度，仅在计算结果变化时才设置
 
-如果没开机或没联网, 则自动延迟
+没联网时沿用当天已有的天气数据，下次整点再查询；旧天气数据仅当天有效
 
 最低支持 Win7、Win2008
 
@@ -25,7 +25,7 @@ Windows 自动调整屏幕亮度
 powershell [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; (New-Object Net.WebClient).DownloadString('https://cdn.jsdelivr.net/gh/star2000/AutoMonitorBrightness@main/install.ps1') | iex
 ```
 
-> Windows 已弃用 VBScript，新版改用 PowerShell 启动。已安装的用户重新执行安装命令即可自动迁移，并清理旧的 `AutoMonitorBrightness.vbs`
+> Windows 已弃用 VBScript，改用 PowerShell 启动常驻进程；只在开机 / 登录启动时可能短暂出现窗口。已安装的用户重新执行安装命令即可，安装时会结束旧的常驻进程
 
 ### 卸载
 
@@ -41,15 +41,13 @@ powershell [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManage
 setx "环境变量名" "环境变量值"
 ```
 
-手动刷新执行
+手动重启
 
-```bat
-schtasks /Run /TN "\star2000\AutoMonitorBrightness"
-```
+再次执行安装命令即可，安装时会结束旧的常驻进程并重新启动
 
 - 位置
   - 环境变量名：`AMB_LOCATION`
-  - 默认值：无（未填时尝试使用Windows系统的定位服务，如果获取不到最好手动填写位置信息，不然靠IP推断位置会偏很远，查到的天气信息可能不对）
+  - 默认值：无（未填时每次查询天气都会重新尝试使用Windows系统的定位服务，如果获取不到最好手动填写位置信息，不然靠IP推断位置会偏很远，查到的天气信息可能不对）
   - 可选值：`纬度,经度` 或者 `地名` 镇级及以上 中英文都行
 - 最大亮度
   - 环境变量名：`AMB_MAX_BRIGHTNESS`
