@@ -25,6 +25,8 @@ Windows 自动调整屏幕亮度
 powershell [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; (New-Object Net.WebClient).DownloadString('https://cdn.jsdelivr.net/gh/star2000/AutoMonitorBrightness@main/install.ps1') | iex
 ```
 
+> Windows 已弃用 VBScript，新版改用 PowerShell 启动。已安装的用户重新执行安装命令即可自动迁移，并清理旧的 `AutoMonitorBrightness.vbs`
+
 ### 卸载
 
 ```ps1
