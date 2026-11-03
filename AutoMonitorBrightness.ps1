@@ -96,12 +96,123 @@ function Get-CurrentLocation {
     }
 }
 
-function Get-WeatherData {
-    # 未配置位置时每次查询都重新定位，设备移动后位置会变化
-    $WeatherLocation = $Location
-    if (!$WeatherLocation) {
-        $WeatherLocation = Get-CurrentLocation
+function Get-Coordinates([string]$LocationText) {
+    # 只识别 "纬度,经度"，地名无法用于本地日出日落计算
+    $Match = [regex]::Match($LocationText, '^\s*([-+]?\d+(?:\.\d+)?)\s*,\s*([-+]?\d+(?:\.\d+)?)\s*$')
+    if (!$Match.Success) { return $null }
+    $Latitude = [double]$Match.Groups[1].Value
+    $Longitude = [double]$Match.Groups[2].Value
+    if (($Latitude -lt -90) -or ($Latitude -gt 90) -or ($Longitude -lt -180) -or ($Longitude -gt 180)) {
+        return $null
     }
+    return [pscustomobject]@{ Latitude = $Latitude; Longitude = $Longitude }
+}
+
+function Get-SunTimes([double]$Latitude, [double]$Longitude, [datetime]$Date) {
+    # NOAA 近似公式，纯本地计算，不依赖天气服务
+    $BaseUtc = $Date.Date.AddHours(12).ToUniversalTime().Date
+    $Gamma = 2 * [Math]::PI / 365 * ($BaseUtc.DayOfYear - 1)
+    $EqTime = 229.18 * (0.000075 + 0.001868 * [Math]::Cos($Gamma) - 0.032077 * [Math]::Sin($Gamma) - 0.014615 * [Math]::Cos(2 * $Gamma) - 0.040849 * [Math]::Sin(2 * $Gamma))
+    $Declination = 0.006918 - 0.399912 * [Math]::Cos($Gamma) + 0.070257 * [Math]::Sin($Gamma) - 0.006758 * [Math]::Cos(2 * $Gamma) + 0.000907 * [Math]::Sin(2 * $Gamma) - 0.002697 * [Math]::Cos(3 * $Gamma) + 0.00148 * [Math]::Sin(3 * $Gamma)
+    $LatitudeRad = $Latitude * [Math]::PI / 180
+    $CosHourAngle = [Math]::Cos(90.833 * [Math]::PI / 180) / ([Math]::Cos($LatitudeRad) * [Math]::Cos($Declination)) - [Math]::Tan($LatitudeRad) * [Math]::Tan($Declination)
+    if ($CosHourAngle -gt 1) {
+        # 极夜：太阳整天不升起
+        return [pscustomobject]@{ Sunrise = [timespan]::Zero; Sunset = [timespan]::Zero; PolarDay = $false }
+    }
+    if ($CosHourAngle -lt -1) {
+        # 极昼：太阳整天不落下
+        return [pscustomobject]@{ Sunrise = [timespan]::Zero; Sunset = [timespan]::FromDays(1); PolarDay = $true }
+    }
+    $HourAngle = [Math]::Acos($CosHourAngle) * 180 / [Math]::PI
+    $SolarNoonMinutes = 720 - 4 * $Longitude - $EqTime
+    $SunriseUtc = $BaseUtc.AddMinutes($SolarNoonMinutes - 4 * $HourAngle)
+    $SunsetUtc = $BaseUtc.AddMinutes($SolarNoonMinutes + 4 * $HourAngle)
+    return [pscustomobject]@{
+        Sunrise  = $SunriseUtc.ToLocalTime().TimeOfDay
+        Sunset   = $SunsetUtc.ToLocalTime().TimeOfDay
+        PolarDay = $false
+    }
+}
+
+function Get-FallbackBrightness($Sun, [datetime]$Now) {
+    # 天气不可用时的固定分段亮度：夜间最低、晨昏 25%、白天 50%
+    if ($Sun.PolarDay) {
+        return [int][Math]::Round($MinBrightness + ($MaxBrightness - $MinBrightness) * 0.5)
+    }
+    if ($Sun.Sunrise -eq $Sun.Sunset) {
+        return $MinBrightness
+    }
+    $NowMinutes = $Now.TimeOfDay.TotalMinutes
+    $SunriseMinutes = $Sun.Sunrise.TotalMinutes
+    $SunsetMinutes = $Sun.Sunset.TotalMinutes
+    $TwilightMinutes = 60
+    if (($NowMinutes -ge ($SunriseMinutes + $TwilightMinutes)) -and ($NowMinutes -le ($SunsetMinutes - $TwilightMinutes))) {
+        return [int][Math]::Round($MinBrightness + ($MaxBrightness - $MinBrightness) * 0.5)
+    }
+    if ((($NowMinutes -ge ($SunriseMinutes - $TwilightMinutes)) -and ($NowMinutes -le ($SunriseMinutes + $TwilightMinutes))) -or
+        (($NowMinutes -ge ($SunsetMinutes - $TwilightMinutes)) -and ($NowMinutes -le ($SunsetMinutes + $TwilightMinutes)))) {
+        return [int][Math]::Round($MinBrightness + ($MaxBrightness - $MinBrightness) * 0.25)
+    }
+    return $MinBrightness
+}
+
+function Get-ClockBrightness([datetime]$Now) {
+    # 完全拿不到经纬度时的最后兜底：只按钟点粗分，不用系统时区反推经度
+    $Minutes = $Now.TimeOfDay.TotalMinutes
+    if (($Minutes -ge 420) -and ($Minutes -le 1140)) {
+        return [int][Math]::Round($MinBrightness + ($MaxBrightness - $MinBrightness) * 0.5)
+    }
+    if ((($Minutes -ge 360) -and ($Minutes -lt 420)) -or (($Minutes -gt 1140) -and ($Minutes -le 1200))) {
+        return [int][Math]::Round($MinBrightness + ($MaxBrightness - $MinBrightness) * 0.25)
+    }
+    return $MinBrightness
+}
+
+function Update-GeoCoords {
+    # 系统定位并缓存坐标；超过刷新间隔才重新定位，笔记本移动后能跟着变
+    $Expired = ($null -eq $script:GeoUpdatedAt) -or (((Get-Date) - $script:GeoUpdatedAt).TotalMinutes -ge $script:GeoRefreshMinutes)
+    if ($Expired) {
+        $LocationValue = Get-CurrentLocation
+        $Coords = Get-Coordinates $LocationValue
+        if ($Coords) {
+            $script:GeoCoords = $Coords
+        }
+        $script:GeoUpdatedAt = Get-Date
+        if ($LocationValue) { return $LocationValue }
+    }
+    if ($script:GeoCoords) {
+        return ('{0},{1}' -f $script:GeoCoords.Latitude, $script:GeoCoords.Longitude)
+    }
+    return $null
+}
+
+function Get-SunContext([string]$LocationText, [datetime]$Now) {
+    # 日出日落的经纬度来源：配置的经纬度优先，否则用系统定位（地名也走定位，位置会变）
+    $Coords = $null
+    $Source = $null
+    if ($LocationText) {
+        $Coords = Get-Coordinates $LocationText
+        if ($Coords) { $Source = '配置的经纬度' }
+    }
+    if (!$Coords) {
+        Update-GeoCoords | Out-Null
+        if ($script:GeoCoords) {
+            $Coords = $script:GeoCoords
+            $Source = '系统定位'
+        }
+    }
+    if (!$Coords) { return $null }
+    return [pscustomobject]@{
+        Sun       = Get-SunTimes $Coords.Latitude $Coords.Longitude $Now.Date
+        Source    = $Source
+        Latitude  = $Coords.Latitude
+        Longitude = $Coords.Longitude
+    }
+}
+
+function Get-WeatherData([string]$WeatherLocation) {
+    # 现在只取紫外线指数，日出日落由本地计算
     if ($WeatherLocation) {
         Write-Log "本次使用位置: $WeatherLocation"
     }
@@ -109,32 +220,41 @@ function Get-WeatherData {
         Write-Log '没有可用位置，直接查询 wttr.in（由其按 IP 推断）' 'WARN'
     }
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072
-    $WebClient = New-Object Net.WebClient
-    $WebClient.Encoding = [Text.Encoding]::UTF8
-    $WebClient.Proxy = $null
-    # 20:14:28+0800|05:07:50|19:15:47|0
-    $Url = "https://wttr.in/${WeatherLocation}?lang=zh&format=%T|%S|%s|%u"
+    $Url = "https://wttr.in/${WeatherLocation}?lang=zh&format=%u"
     Write-Log "查询天气: $Url"
-    $WeatherString = $WebClient.DownloadString($Url)
-    $WeatherSplit = $WeatherString.Split('|')
-    [pscustomobject]@{
-        Time      = [timespan]$WeatherSplit[0].Split('+')[0]
-        Sunrise   = [timespan]$WeatherSplit[1]
-        Sunset    = [timespan]$WeatherSplit[2]
-        UvIndex   = [int]$WeatherSplit[3]
-        UpdatedAt = Get-Date
+    $Request = [Net.WebRequest]::Create($Url)
+    $Request.Timeout = 10000
+    $Request.Proxy = $null
+    $Response = $null
+    try {
+        $Response = $Request.GetResponse()
+        if ($Response.StatusCode -ne [Net.HttpStatusCode]::OK) {
+            throw "HTTP 状态码 $([int]$Response.StatusCode)"
+        }
+        $Reader = New-Object IO.StreamReader($Response.GetResponseStream(), [Text.Encoding]::UTF8)
+        $Text = $Reader.ReadToEnd()
+        $Reader.Dispose()
     }
+    finally {
+        if ($Response) { $Response.Close() }
+    }
+    $UvIndex = 0
+    if (-not [int]::TryParse($Text.Trim(), [ref]$UvIndex)) {
+        throw "返回内容异常: '$($Text.Trim())'"
+    }
+    if (($UvIndex -lt 0) -or ($UvIndex -gt 20)) {
+        throw "紫外线指数超出合理范围: $UvIndex"
+    }
+    return [pscustomobject]@{ UvIndex = $UvIndex; UpdatedAt = Get-Date }
 }
 
-function Get-TargetBrightness($Weather) {
-    # 用天气数据的时间加上已过去的时间来推进当前时间
-    $Ticks = ($Weather.Time.Ticks + ((Get-Date) - $Weather.UpdatedAt).Ticks) % [timespan]::TicksPerDay
-    $Time = [timespan]::FromTicks($Ticks)
-    if ($Weather.Sunrise -ne $Weather.Sunset -and $Time -ge $Weather.Sunrise -and $Time -le $Weather.Sunset) {
-        $MiddayTicks = ($Weather.Sunrise.Ticks + $Weather.Sunset.Ticks) / 2
-        $HalfDayTicks = ($Weather.Sunset.Ticks - $Weather.Sunrise.Ticks) / 2
+function Get-TargetBrightness($Sun, [int]$UvIndex, [datetime]$Now) {
+    $Time = $Now.TimeOfDay
+    if ($Sun.Sunrise -ne $Sun.Sunset -and $Time -ge $Sun.Sunrise -and $Time -le $Sun.Sunset) {
+        $MiddayTicks = ($Sun.Sunrise.Ticks + $Sun.Sunset.Ticks) / 2
+        $HalfDayTicks = ($Sun.Sunset.Ticks - $Sun.Sunrise.Ticks) / 2
         $SunElevation = [Math]::Max(1 - [Math]::Abs($Time.Ticks - $MiddayTicks) / $HalfDayTicks, 0)
-        $UvFactor = [Math]::Min($Weather.UvIndex / 7.5, 1)
+        $UvFactor = [Math]::Min($UvIndex / 7.5, 1)
         $TimeFactor = ([Math]::Pow($SunElevation - 1, 3) + 1) * 0.382
         $Factor = $TimeFactor * (1 + $UvFactor)
         return [int]($MinBrightness + ($MaxBrightness - $MinBrightness) * $Factor)
@@ -187,6 +307,11 @@ $WeatherDate = $null
 $LastFetchStamp = $null
 $LastBrightness = $null
 $CountStamp = $null
+$GeoCoords = $null
+$GeoUpdatedAt = $null
+$GeoRefreshMinutes = 30
+$LastCoordsSource = $null
+$FallbackMode = $false
 
 Write-Log '进入监控循环，每 60 秒检查一次亮度'
 
@@ -203,6 +328,9 @@ while ($true) {
         Write-Log "查询位置已更新: '$OldLocation' -> '$Location'" 'OK'
         # 位置变了，立即重新查天气，不用等到下个整点
         $LastFetchStamp = $null
+        $GeoCoords = $null
+        $GeoUpdatedAt = $null
+        $LastCoordsSource = $null
     }
     if (($MaxBrightness -ne $OldMaxBrightness) -or ($MinBrightness -ne $OldMinBrightness)) {
         Write-Log "亮度范围已更新: $OldMinBrightness - $OldMaxBrightness -> $MinBrightness - $MaxBrightness" 'OK'
@@ -226,75 +354,114 @@ while ($true) {
     if ($Stamp -ne $LastFetchStamp) {
         $LastFetchStamp = $Stamp
         Write-Log "开始查询天气（$Stamp）"
+        $WeatherLocation = $Location
+        if (!$WeatherLocation) {
+            # 未配置位置时用系统定位（带缓存刷新），设备移动后位置会变化
+            $WeatherLocation = Update-GeoCoords
+        }
         try {
-            $Weather = Get-WeatherData
+            $Weather = Get-WeatherData $WeatherLocation
             $WeatherDate = $Now.Date
-            Write-Log "天气数据: 当前 $($Weather.Time) 日出 $($Weather.Sunrise) 日落 $($Weather.Sunset) 紫外线 $($Weather.UvIndex)" 'OK'
+            Write-Log "天气数据: 紫外线 $($Weather.UvIndex)" 'OK'
         }
         catch {
             Write-Log "天气查询失败: $($_.Exception.Message)" 'ERROR'
-            Write-Log '本次沿用当天已有的天气数据，下次整点再试' 'WARN'
+            Write-Log '本次沿用当天已有的天气数据，下次整点再试；没有当天数据时按降级模式调节' 'WARN'
         }
     }
 
-    # 旧天气数据仅当天有效
-    if ($Weather -and ($WeatherDate -eq $Now.Date)) {
-        $Brightness = Get-TargetBrightness $Weather
-        $CurrentBrightness = Get-CurrentBrightness
-        if ($null -ne $CurrentBrightness) {
-            # 能读到实际亮度时按实际值判断，避免手动调整后被覆盖或重复写入
-            $Mismatched = @($CurrentBrightness.GetEnumerator() | Where-Object { $_.Value -ne $Brightness })
-            if ($Mismatched.Count -eq 0) {
-                Write-Log "当前亮度已是目标 $Brightness，无需调整"
-                $LastBrightness = @($CurrentBrightness.Values)[0]
+    # 日出日落与经纬度获取放在一起：配置经纬度优先，否则系统定位并按间隔刷新
+    $SunContext = Get-SunContext $Location $Now
+    if ($SunContext) {
+        $Sun = $SunContext.Sun
+        $CoordsSource = ('{0}，纬度 {1} 经度 {2}（经度对应太阳时 UTC{3:+0.0;-0.0}）' -f $SunContext.Source, [Math]::Round($SunContext.Latitude, 2), [Math]::Round($SunContext.Longitude, 2), ($SunContext.Longitude / 15))
+    }
+    else {
+        $Sun = $null
+        $CoordsSource = '钟点兜底（无法获取经纬度）'
+    }
+    if ($CoordsSource -ne $LastCoordsSource) {
+        Write-Log "日出日落坐标来源: $CoordsSource"
+        $LastCoordsSource = $CoordsSource
+    }
+
+    # 没有日出日落，或当天没有可用天气数据时，进入降级模式；恢复后自动回到正常逻辑
+    $IsFallback = (!$Sun) -or (-not ($Weather -and ($WeatherDate -eq $Now.Date)))
+    if ($IsFallback -ne $FallbackMode) {
+        if ($IsFallback) {
+            if (!$Sun) {
+                Write-Log '无法获取经纬度，无法计算日出日落，按钟点时段的固定亮度调节' 'WARN'
             }
             else {
-                $Detail = ($Mismatched | ForEach-Object { '{0}: {1}' -f $_.Key, $_.Value }) -join '; '
-                Write-Log "当前亮度与目标 $Brightness 不符（$Detail）"
-                try {
-                    Set-Brightness $Brightness
-                    # 上次亮度记录设置后查询到的实际值，而不是目标值
-                    $Applied = Get-CurrentBrightness
-                    if ($null -ne $Applied) {
-                        $LastBrightness = @($Applied.Values)[0]
-                    }
-                    else {
-                        $LastBrightness = $Brightness
-                    }
-                }
-                catch {
-                    Write-Log "亮度设置失败: $($_.Exception.Message)" 'ERROR'
-                    # 设置失败视为未执行，清空记录，下一轮必定重试
-                    $LastBrightness = $null
-                }
+                Write-Log ("天气服务不可用，进入降级模式：日出 {0:hh\:mm} 日落 {1:hh\:mm}，按固定时段亮度调节" -f $Sun.Sunrise, $Sun.Sunset) 'WARN'
             }
         }
         else {
-            # 读不到实际亮度时退回按目标变化判断，避免反复无效写入
-            if (($null -eq $LastBrightness) -or ($Brightness -ne $LastBrightness)) {
-                if ($null -eq $LastBrightness) {
-                    Write-Log "首次计算的目标亮度: $Brightness"
+            Write-Log '日出日落与天气数据已恢复，回到正常调节模式' 'OK'
+        }
+        $FallbackMode = $IsFallback
+    }
+
+    if (!$Sun) {
+        $Brightness = Get-ClockBrightness $Now
+    }
+    elseif ($IsFallback) {
+        $Brightness = Get-FallbackBrightness $Sun $Now
+    }
+    else {
+        $Brightness = Get-TargetBrightness $Sun $Weather.UvIndex $Now
+    }
+    $CurrentBrightness = Get-CurrentBrightness
+    if ($null -ne $CurrentBrightness) {
+        # 能读到实际亮度时按实际值判断，避免手动调整后被覆盖或重复写入
+        $Mismatched = @($CurrentBrightness.GetEnumerator() | Where-Object { $_.Value -ne $Brightness })
+        if ($Mismatched.Count -eq 0) {
+            Write-Log "当前亮度已是目标 $Brightness，无需调整"
+            $LastBrightness = @($CurrentBrightness.Values)[0]
+        }
+        else {
+            $Detail = ($Mismatched | ForEach-Object { '{0}: {1}' -f $_.Key, $_.Value }) -join '; '
+            Write-Log "当前亮度与目标 $Brightness 不符（$Detail）"
+            try {
+                Set-Brightness $Brightness
+                # 上次亮度记录设置后查询到的实际值，而不是目标值
+                $Applied = Get-CurrentBrightness
+                if ($null -ne $Applied) {
+                    $LastBrightness = @($Applied.Values)[0]
                 }
                 else {
-                    Write-Log "目标亮度变化: $LastBrightness -> $Brightness"
-                }
-                try {
-                    Set-Brightness $Brightness
                     $LastBrightness = $Brightness
                 }
-                catch {
-                    Write-Log "亮度设置失败: $($_.Exception.Message)" 'ERROR'
-                    # 设置失败视为未执行，清空记录，下一轮必定重试
-                    $LastBrightness = $null
-                }
             }
-            else {
-                Write-Log "读不到当前亮度，沿用上次目标 $Brightness，无需调整"
+            catch {
+                Write-Log "亮度设置失败: $($_.Exception.Message)" 'ERROR'
+                # 设置失败视为未执行，清空记录，下一轮必定重试
+                $LastBrightness = $null
             }
         }
     }
     else {
-        Write-Log '当天暂无可用天气数据，本次跳过亮度调整' 'WARN'
+        # 读不到实际亮度时退回按目标变化判断，避免反复无效写入
+        if (($null -eq $LastBrightness) -or ($Brightness -ne $LastBrightness)) {
+            if ($null -eq $LastBrightness) {
+                Write-Log "首次计算的目标亮度: $Brightness"
+            }
+            else {
+                Write-Log "目标亮度变化: $LastBrightness -> $Brightness"
+            }
+            try {
+                Set-Brightness $Brightness
+                $LastBrightness = $Brightness
+            }
+            catch {
+                Write-Log "亮度设置失败: $($_.Exception.Message)" 'ERROR'
+                # 设置失败视为未执行，清空记录，下一轮必定重试
+                $LastBrightness = $null
+            }
+        }
+        else {
+            Write-Log "读不到当前亮度，沿用上次目标 $Brightness，无需调整"
+        }
     }
 
     Start-Sleep -Seconds 60
