@@ -262,6 +262,19 @@ function Get-TargetBrightness($Sun, [int]$UvIndex, [datetime]$Now) {
     return $MinBrightness
 }
 
+function Test-DisplayAvailable {
+    # 合盖后内屏断电，WmiMonitorBasicDisplayParams 查不到实例，此时写亮度不会生效
+    try {
+        $Monitors = @(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBasicDisplayParams -ErrorAction Stop |
+                Where-Object { $_.Active -ne $false })
+    }
+    catch {
+        Write-Log "检测显示器状态失败: $($_.Exception.Message)" 'WARN'
+        return $false
+    }
+    return ($Monitors.Count -gt 0)
+}
+
 function Get-CurrentBrightness {
     # 返回 实例名 -> 当前亮度 的哈希表；读不到时返回 $null（例如合盖后内屏断电）
     try {
@@ -312,6 +325,7 @@ $GeoUpdatedAt = $null
 $GeoRefreshMinutes = 30
 $LastCoordsSource = $null
 $FallbackMode = $false
+$DisplayAvailable = $true
 
 Write-Log '进入监控循环，每 60 秒检查一次亮度'
 
@@ -411,6 +425,22 @@ while ($true) {
     else {
         $Brightness = Get-TargetBrightness $Sun $Weather.UvIndex $Now
     }
+    # 合盖或屏幕关闭时显示器实例消失，此时写亮度无效，直接跳过本轮
+    $IsDisplayAvailable = Test-DisplayAvailable
+    if ($IsDisplayAvailable -ne $DisplayAvailable) {
+        if ($IsDisplayAvailable) {
+            Write-Log '显示器已恢复可用，继续调节亮度' 'OK'
+        }
+        else {
+            Write-Log '显示器当前不可用（可能已合盖或屏幕关闭），暂停调节亮度' 'WARN'
+        }
+        $DisplayAvailable = $IsDisplayAvailable
+    }
+    if (!$IsDisplayAvailable) {
+        Start-Sleep -Seconds 60
+        continue
+    }
+
     $CurrentBrightness = Get-CurrentBrightness
     if ($null -ne $CurrentBrightness) {
         # 能读到实际亮度时按实际值判断，避免手动调整后被覆盖或重复写入
