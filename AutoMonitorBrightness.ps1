@@ -314,12 +314,12 @@ function Set-Brightness([int]$Brightness) {
 $CountClient = New-Object Net.WebClient
 $CountClient.Encoding = [Text.Encoding]::UTF8
 $CountClient.Proxy = $null
+$CountFile = Join-Path $env:ALLUSERSPROFILE 'AutoMonitorBrightness.count'
 
 $Weather = $null
 $WeatherDate = $null
 $LastFetchStamp = $null
 $LastBrightness = $null
-$CountStamp = $null
 $GeoCoords = $null
 $GeoUpdatedAt = $null
 $GeoRefreshMinutes = 30
@@ -350,13 +350,17 @@ while ($true) {
         Write-Log "亮度范围已更新: $OldMinBrightness - $OldMaxBrightness -> $MinBrightness - $MaxBrightness" 'OK'
     }
 
-    # 启动时和每天计数一次
+    # 每天计数一次，日期记录在 ProgramData 下，重启后不会重复上报
     $DayStamp = $Now.ToString('yyyyMMdd')
-    if ($DayStamp -ne $CountStamp) {
-        $CountStamp = $DayStamp
+    $LastCountDay = ''
+    if (Test-Path $CountFile) {
+        $LastCountDay = ([string](Get-Content $CountFile -Raw)).Trim()
+    }
+    if ($DayStamp -ne $LastCountDay) {
         Write-Log '上报匿名计数'
         try {
             $CountClient.DownloadString('https://cdn.jsdelivr.net/gh/star2000/count@5/count') | Out-Null
+            Set-Content -Path $CountFile -Value $DayStamp -Encoding ASCII
             Write-Log '计数上报成功' 'OK'
         }
         catch {
